@@ -31,4 +31,3 @@ neuron.o: neuron.c
 # Clean target to remove object files and the executable
 clean:
 	rm -f *.o $(EXEC)
-
