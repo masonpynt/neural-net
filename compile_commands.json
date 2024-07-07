@@ -5,6 +5,8 @@
       "-g",
       "-Wall",
       "-Werror",
+      "-fsanitize=address",
+      "-fno-omit-frame-pointer",
       "-c",
       "neural.c"
     ],

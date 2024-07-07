@@ -1,11 +1,14 @@
 #include "backprop.h"
+#include "cost.h"
 #include "layer.h"
 #include "neuron.h"
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #if defined(__APPLE__) && defined(__MACH__)
 #include <libkern/OSByteOrder.h>
 #include <machine/endian.h>
@@ -22,6 +25,7 @@
 #define be64toh(x) OSSwapBigToHostInt64(x)
 #define le64toh(x) OSSwapLittleToHostInt64(x)
 #elif defined(__linux__)
+#include <endian.h>
 #endif
 
 layer *lay = NULL;
@@ -34,17 +38,13 @@ float **input;
 float **desired_outputs;
 int num_training_ex;
 int n = 1;
-float alpha = 0.15;
-
-// Read integers
+float alpha = 0.01;
 
 int read_int(FILE *fp) {
   uint32_t integer;
   fread(&integer, sizeof(uint32_t), 1, fp);
   return be32toh(integer);
 }
-
-// Load mnist images
 
 void load_images(const char *filename, float ***images, int *num_images) {
   printf("Loading images\n");
@@ -87,7 +87,7 @@ void load_images(const char *filename, float ***images, int *num_images) {
     for (int j = 0; j < rows * cols; j++) {
       unsigned char pixel;
       fread(&pixel, sizeof(unsigned char), 1, file);
-      (*images)[i][j] = pixel / 255.0f; // Normalize pixel value
+      (*images)[i][j] = pixel / 255.0f;
     }
   }
 
@@ -109,114 +109,393 @@ void load_labels(const char *filename, int8_t **labels, int *num_labels) {
   }
 
   *num_labels = read_int(file);
-  *labels = malloc(*num_labels * sizeof(int8_t));
-  if (*labels == NULL) {
-    fprintf(stderr, "Memory allocation failed for labels\n");
-    fclose(file);
-    return;
-  }
-
-  if (fread(*labels, sizeof(int8_t), *num_labels, file) != *num_labels) {
-    fprintf(stderr, "Failed to read all labels\n");
-    free(*labels);
-    fclose(file);
-    return;
-  }
-
+  *labels = malloc(*num_labels * sizeof(uint8_t));
+  fread(*labels, sizeof(uint8_t), *num_labels, file);
   fclose(file);
 }
 
-void train_nn(float **images) {
-  printf("start training\n");
-  int it, i;
-  for (it = 0; it < 20000; it++) {
-    full_cost = 0.0;
-    for (i = 0; i < num_training_ex; i++) {
-      feed_input(i, images);
-      forward_prop();
-      compute_cost(i);
-      back_prop(i);
-      update_weights();
+void feed_input(int idx, float **images) {
+  if (idx < 0 || idx >= num_training_ex) {
+    fprintf(stderr, "Error: Invalid training example index %d\n", idx);
+    return;
+  }
+  for (int j = 0; j < num_neurons[0] && j < 784; j++) {
+    lay[0].neu[j].actv = images[idx][j];
+  }
+}
+void forward_prop(void) {
+  int i, j, k;
+  for (i = 1; i < num_layers; i++) {
+    if (num_neurons[i - 1] != 784 && i == 1) {
+      fprintf(stderr, "Error: input layer has %d neurons instead of 784\n",
+              num_neurons[i - 1]);
     }
-    if (it % 1000 == 0) {
-      printf("Epoch %d, Cost %f\n", it, full_cost / num_training_ex);
+
+    float max_z = -INFINITY;
+
+    for (j = 0; j < num_neurons[i]; j++) {
+      if (num_neurons[i] != 10 && i == num_layers - 1) {
+        fprintf(stderr, "Error: output layer has %d neurons instead of 10\n",
+                num_neurons[i]);
+      }
+      lay[i].neu[j].z = lay[i].neu[j].bias;
+
+      for (k = 0; k < num_neurons[i - 1] && k < 784; k++) {
+        if (k >= num_neurons[i - 1] || j >= num_neurons[i] ||
+            lay[i - 1].neu[k].out_weights == NULL) {
+          fprintf(
+              stderr,
+              "Error: Invalid array access in layer %d, neuron %d, weight %d\n",
+              i, j, k);
+          exit(EXIT_FAILURE);
+        }
+
+        float weight = lay[i - 1].neu[k].out_weights[j];
+        float prev_actv = lay[i - 1].neu[k].actv;
+        lay[i].neu[j].z += weight * prev_actv;
+      }
+
+      if (isnan(lay[i].neu[j].z) || isinf(lay[i].neu[j].z)) {
+        fprintf(stderr, "Error: NaN or Inf detected in layer %d, neuron %d\n",
+                i, j);
+        lay[i].neu[j].z = 0;
+      }
+
+      if (i < num_layers - 1) {
+        lay[i].neu[j].actv = (lay[i].neu[j].z > 0) ? lay[i].neu[j].z : 0;
+      } else {
+        if (lay[i].neu[j].z > max_z) {
+          max_z = lay[i].neu[j].z;
+        }
+      }
+    }
+
+    if (i == num_layers - 1) {
+      float sum_exp = 0.0;
+      for (j = 0; j < num_neurons[i]; j++) {
+        lay[i].neu[j].actv = exp(lay[i].neu[j].z - max_z);
+        sum_exp += lay[i].neu[j].actv;
+      }
+      for (j = 0; j < num_neurons[i]; j++) {
+        lay[i].neu[j].actv /= sum_exp;
+        if (lay[i].neu[j].actv < 1e-15)
+          lay[i].neu[j].actv = 1e-15;
+      }
     }
   }
 }
-int main(void) {
-  float **images;
-  int8_t *labels;
-  int num_images, num_labels;
+void back_prop(int p) {
+  int i, j, k;
+  for (i = num_layers - 1; i > 0; i--) {
+    for (j = 0; j < num_neurons[i]; j++) {
+      if (i == num_layers - 1) {
+        lay[i].neu[j].dz = (lay[i].neu[j].actv - desired_outputs[p][j]) *
+                           lay[i].neu[j].actv * (1 - lay[i].neu[j].actv);
+      } else {
+        lay[i].neu[j].dz = 0;
+        for (k = 0; k < num_neurons[i + 1]; k++) {
+          lay[i].neu[j].dz +=
+              lay[i + 1].neu[k].dz * lay[i].neu[j].out_weights[k];
+        }
+        lay[i].neu[j].dz *= (lay[i].neu[j].actv > 0) ? 1 : 0;
+      }
+      for (k = 0; k < num_neurons[i - 1]; k++) {
+        lay[i - 1].neu[k].dw[j] = lay[i].neu[j].dz * lay[i - 1].neu[k].actv;
+      }
+      lay[i].neu[j].dbias = lay[i].neu[j].dz;
+    }
+  }
+}
+void clip_gradients(float threshold) {
+  for (int i = 1; i < num_layers; i++) {
+    for (int j = 0; j < num_neurons[i]; j++) {
+      if (lay[i].neu[j].dz > threshold)
+        lay[i].neu[j].dz = threshold;
+      if (lay[i].neu[j].dz < -threshold)
+        lay[i].neu[j].dz = -threshold;
+    }
+  }
+}
 
-  // Load images and labels
-  load_images("train-images-idx3-ubyte", &images, &num_images);
-  load_labels("train-labels-idx1-ubyte", &labels, &num_labels);
+void update_weights(void) {
+  for (int i = 0; i < num_layers - 1; i++) {
+    for (int j = 0; j < num_neurons[i]; j++) {
+      for (int k = 0; k < num_neurons[i + 1]; k++) {
+        float update = alpha * lay[i].neu[j].dw[k];
+        if (isnan(update) || isinf(update)) {
+          printf("NaN/Inf detected in weight update: layer=%d, neuron=%d, "
+                 "weight=%d, value=%f\n",
+                 i, j, k, update);
+          continue;
+        }
+        lay[i].neu[j].out_weights[k] -= update;
+      }
+    }
+  }
+}
+int create_architecture(void) {
+  printf("start arch\n");
+  int i, j;
+  lay = (layer *)malloc(num_layers * sizeof(layer));
+  if (lay == NULL) {
+    fprintf(stderr, "Memory allocation failed for layers\n");
+    exit(EXIT_FAILURE);
+  }
+  for (i = 0; i < num_layers; i++) {
+    printf("Enter loop arch\n");
+    lay[i] = create_layer(num_neurons[i]);
+    lay[i].num_neu = num_neurons[i];
+    for (j = 0; j < num_neurons[i]; j++) {
+      lay[i].neu[j] =
+          create_neuron(i < num_layers - 1 ? num_neurons[i + 1] : 0);
+    }
+  }
+  printf("Before finish\n");
+  return CREATION_ARCH_SUCCESS;
+}
+
+int initialize_weights(void) {
+  if (lay == NULL) {
+    printf("No layers in NN.\n");
+    return ERR_INIT_WEIGHTS;
+  }
+  printf("Init weights...\n");
+
+  return SUCCESS_INIT_WEIGHTS;
+}
+
+void compute_cost(int idx) {
+  if (idx < 0 || idx >= num_training_ex) {
+    fprintf(stderr,
+            "Error: Invalid index %d in compute_cost (num_training_ex: %d)\n",
+            idx, num_training_ex);
+    return;
+  }
+
+  cost[idx] = 0.0;
+  for (int j = 0; j < num_neurons[num_layers - 1]; j++) {
+    float desired = desired_outputs[idx][j];
+    float actual = lay[num_layers - 1].neu[j].actv;
+    float error = desired - actual;
+    cost[idx] += 0.5 * error * error;
+  }
+
+  if (isnan(cost[idx]) || isinf(cost[idx])) {
+    printf("Warning: NaN/Inf detected in cost for example %d\n", idx);
+    cost[idx] = 0.0;
+  }
+
+  full_cost += cost[idx];
+}
+
+int train_nn(float **images, const char *model_filename) {
+  printf("start training\n");
+  int it, i;
+  float min_delta = 0.0001;
+  int patience = 10;
+
+  for (it = 0; it < 100; it++) {
+    full_cost = 0.0;
+    for (i = 0; i < num_training_ex; i++) {
+      if (i % 10000 == 0) {
+        printf("Training example %d of epoch %d\n", i, it);
+      }
+      //      printf("Feeding input...\n");
+      feed_input(i, images);
+      //     printf("Forward propagation...\n");
+      forward_prop();
+      //     printf("Computing cost...\n");
+      compute_cost(i);
+      //    printf("Back propagation...\n");
+      back_prop(i);
+      //   printf("Updating weights...\n");
+      update_weights();
+      if (i % 10000 == 0) {
+        printf("Example %d completed\n", i);
+      }
+    }
+    float avg_cost = full_cost / num_training_ex;
+    printf("Epoch %d, Avg Cost %f\n", it, avg_cost);
+    //    printf("Epoch %d, Cost %f\n", it, full_cost / num_training_ex);
+    if (check_early_stopping(avg_cost, it, min_delta, patience)) {
+      printf("Training stopped early at epoch %d\n", it);
+      break;
+    }
+  }
+  printf("Saving trained model...\n");
+  int save_neural = save_nn(model_filename);
+  if (save_neural != SAVE_NEURAL_SUCCESS) {
+    printf("Failed to save the model.\n");
+    return ERR_SAVE_NEURAL;
+  }
+  return TRAIN_NEURAL_SUCCESS;
+}
+
+int save_nn(const char *filename) {
+  FILE *file = fopen(filename, "wb");
+  if (file == NULL) {
+    fprintf(stderr, "Failed to open file %s for writing\n", filename);
+    return ERR_SAVE_NEURAL;
+  }
+
+  fwrite(&num_layers, sizeof(int), 1, file);
+  fwrite(num_neurons, sizeof(int), num_layers, file);
+
+  for (int i = 0; i < num_layers; i++) {
+    for (int j = 0; j < num_neurons[i]; j++) {
+      fwrite(&lay[i].neu[j].bias, sizeof(float), 1, file);
+      if (i < num_layers - 1) {
+        fwrite(lay[i].neu[j].out_weights, sizeof(float), num_neurons[i + 1],
+               file);
+      }
+    }
+  }
+  fclose(file);
+  printf("NN saved to %s\n", filename);
+  return SAVE_NEURAL_SUCCESS;
+}
+
+int load_neural_network(const char *filename) {
+  printf("Attempting to load neural network from %s\n", filename);
+  FILE *file = fopen(filename, "rb");
+  if (file == NULL) {
+    fprintf(stderr, "Failed to open file %s for reading\n", filename);
+    return ERR_LOAD_NEURAL;
+  }
+  printf("File opened successfully\n");
+
+  int loaded_num_layers;
+  fread(&loaded_num_layers, sizeof(int), 1, file);
+  printf("Loaded number of layers: %d\n", loaded_num_layers);
+
+  if (loaded_num_layers != num_layers) {
+    fprintf(stderr,
+            "Number of layers in file (%d) does not match expected (%d)\n",
+            loaded_num_layers, num_layers);
+    fprintf(stderr, "Mismatch in nn layers\n");
+    fclose(file);
+    return ERR_LOAD_NEURAL;
+  }
+  int loaded_num_neurons[num_layers];
+  fread(loaded_num_neurons, sizeof(int), loaded_num_layers, file);
+  for (int i = 0; i < num_layers; i++) {
+    if (loaded_num_neurons[i] != num_neurons[i]) {
+      fprintf(stderr, "Mismatch in num neurons\n");
+      fclose(file);
+      return ERR_LOAD_NEURAL;
+    }
+  }
+
+  for (int i = 0; i < num_layers; i++) {
+    for (int j = 0; j < num_neurons[i]; j++) {
+      fread(&lay[i].neu[j].bias, sizeof(float), 1, file);
+      if (i < num_layers - 1) {
+        fread(lay[i].neu[j].out_weights, sizeof(float), num_neurons[i + 1],
+              file);
+      }
+    }
+  }
+  fclose(file);
+  printf("NN loaded from %s\n", filename);
+  return LOAD_NEURAL_SUCCESS;
+}
+
+#ifndef DRAW_PROGRAM
+
+int main(void) {
+  float **images = NULL;
+  int8_t *labels = NULL;
+  int num_images, num_labels;
+  const char *model_filename = "trained_model.bin";
+  bool model_loaded = false;
+
+  load_images("/Users/mason/Dev/neural-net/imgs/train-images.idx3-ubyte",
+              &images, &num_images);
+  load_labels("/Users/mason/Dev/neural-net/labels/train-labels.idx1-ubyte",
+              &labels, &num_labels);
 
   if (num_images != num_labels) {
-    fprintf(stderr,
-            "Error: Number of images (%d) and labels (%d) do not match\n",
-            num_images, num_labels);
-    exit(EXIT_FAILURE);
+    printf("Number of images and labels do not match\n");
+    goto cleanup;
   }
 
   num_training_ex = num_images;
 
-  // Vectorize labels
-  desired_outputs = malloc(num_labels * sizeof(float *));
-  if (desired_outputs == NULL) {
-    fprintf(stderr, "Error: Memory allocation failed for desired_outputs\n");
-    exit(EXIT_FAILURE);
+  if (create_architecture() != CREATION_ARCH_SUCCESS) {
+    printf("Failed to create architecture\n");
+    goto cleanup;
   }
 
+  cost = (float *)malloc(num_training_ex * sizeof(float));
+  if (cost == NULL) {
+    fprintf(stderr, "Failed to allocate memory for cost\n");
+    goto cleanup;
+  }
+
+  desired_outputs = malloc(num_labels * sizeof(float *));
+  if (desired_outputs == NULL) {
+    fprintf(stderr, "Failed to allocate memory for desired outputs\n");
+    goto cleanup;
+  }
   for (int i = 0; i < num_labels; i++) {
     desired_outputs[i] = calloc(10, sizeof(float));
     if (desired_outputs[i] == NULL) {
-      fprintf(stderr,
-              "Error: Memory allocation failed for desired_outputs[%d]\n", i);
-      exit(EXIT_FAILURE);
+      fprintf(stderr, "Failed to allocate memory for desired output %d\n", i);
+      goto cleanup;
     }
     desired_outputs[i][labels[i]] = 1.0;
   }
 
-  if (create_architecture() != CREATION_ARCH_SUCCESS) {
-    fprintf(stderr, "Error: Failed to create architecture\n");
-    return ERR_CREATE_ARCHITECTURE;
+  if (access(model_filename, F_OK) != -1) {
+    printf("Loading existing model...\n");
+    if (load_neural_network(model_filename) == LOAD_NEURAL_SUCCESS) {
+      model_loaded = true;
+      printf("Model loaded successfully.\n");
+      printf("Run ./draw trained_model.bin\n");
+    } else {
+      printf("Failed to load model. Will train a new one.\n");
+    }
   }
 
-  if (initialize_weights() != SUCCESS_INIT_WEIGHTS) {
-    fprintf(stderr, "Error: Failed to initialize weights\n");
-    return ERR_INIT_WEIGHTS;
+  if (!model_loaded) {
+    printf("Training new model...\n");
+    if (initialize_weights() != SUCCESS_INIT_WEIGHTS) {
+      printf("Failed to initialize weights\n");
+      goto cleanup;
+    }
+    int train_neural = train_nn(images, model_filename);
+    if (train_neural != TRAIN_NEURAL_SUCCESS) {
+      printf("Failed to train the model\n");
+      goto cleanup;
+    }
   }
 
-  cost = malloc(num_neurons[num_layers - 1] * sizeof(float));
-  if (cost == NULL) {
-    fprintf(stderr, "Error: Memory allocation failed for cost\n");
-    exit(EXIT_FAILURE);
+cleanup:
+  if (images) {
+    for (int i = 0; i < num_images; i++) {
+      free(images[i]);
+    }
+    free(images);
   }
-
-  train_nn(images);
-
-  // Free resources
-  for (int i = 0; i < num_images; i++) {
-    free(images[i]);
-    free(desired_outputs[i]);
-  }
-  free(images);
-  free(desired_outputs);
   free(labels);
   free(cost);
-
-  // Free neural network resources
-  for (int i = 0; i < num_layers; i++) {
-    for (int j = 0; j < num_neurons[i]; j++) {
-      if (i < num_layers - 1) {
+  if (desired_outputs) {
+    for (int i = 0; i < num_labels; i++) {
+      free(desired_outputs[i]);
+    }
+    free(desired_outputs);
+  }
+  if (lay) {
+    for (int i = 0; i < num_layers; i++) {
+      for (int j = 0; j < num_neurons[i]; j++) {
         free(lay[i].neu[j].out_weights);
         free(lay[i].neu[j].dw);
       }
+      free(lay[i].neu);
     }
-    free(lay[i].neu);
+    free(lay);
   }
-  free(lay);
-
   return 0;
 }
+
+#endif
