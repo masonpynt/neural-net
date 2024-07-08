@@ -1,4 +1,4 @@
-#include "backprop.h"
+#include "neural.h"
 #include "cost.h"
 #include "layer.h"
 #include "neuron.h"
@@ -398,9 +398,9 @@ int load_neural_network(const char *filename) {
 void load_validation_data(float ***images, int8_t **labels,
                           int *num_validation) {
   const char *validation_images_path =
-      "/Users/mason/Dev/neural-net/imgs/t10k-images.idx3-ubyte";
+      "imgs/t10k-images.idx3-ubyte";
   const char *validation_labels_path =
-      "/Users/mason/Dev/neural-net/labels/t10k-labels.idx1-ubyte";
+      "labels/t10k-labels.idx1-ubyte";
 
   load_images(validation_images_path, images, num_validation);
   int num_labels;
@@ -447,9 +447,9 @@ int main(void) {
   bool model_loaded = false;
   char user_choice;
 
-  load_images("/Users/mason/Dev/neural-net/imgs/train-images.idx3-ubyte",
+  load_images("imgs/train-images.idx3-ubyte",
               &images, &num_images);
-  load_labels("/Users/mason/Dev/neural-net/labels/train-labels.idx1-ubyte",
+  load_labels("labels/train-labels.idx1-ubyte",
               &labels, &num_labels);
 
   if (num_images != num_labels) {

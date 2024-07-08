@@ -1,5 +1,5 @@
 #include "draw.h"
-#include "backprop.h"
+#include "neural.h"
 #include "layer.h"
 #include "neuron.h"
 #include <locale.h>
