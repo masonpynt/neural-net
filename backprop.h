@@ -19,6 +19,8 @@
 #define LOAD_NEURAL_SUCCESS 0
 #define ERR_LOAD_NEURAL 1
 #define TRAIN_NEURAL_SUCCESS 0
+#define MODEL_DIR "trained_models/"
+#define MODEL_FILE MODEL_DIR "trained_model.bin"
 
 extern layer *lay;
 extern int num_layers;

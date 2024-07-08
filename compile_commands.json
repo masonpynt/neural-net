@@ -1,16 +1,1 @@
-[
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-g",
-      "-Wall",
-      "-Werror",
-      "-fsanitize=address",
-      "-fno-omit-frame-pointer",
-      "-c",
-      "neural.c"
-    ],
-    "directory": "/Users/mason/Dev/neural-net",
-    "file": "/Users/mason/Dev/neural-net/neural.c"
-  }
-]
+[]

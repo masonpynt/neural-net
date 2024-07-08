@@ -37,6 +37,7 @@ float full_cost;
 float **input;
 float **desired_outputs;
 int num_training_ex;
+int num_testing_ex;
 int n = 1;
 float alpha = 0.01;
 
@@ -300,15 +301,10 @@ int train_nn(float **images, const char *model_filename) {
       if (i % 10000 == 0) {
         printf("Training example %d of epoch %d\n", i, it);
       }
-      //      printf("Feeding input...\n");
       feed_input(i, images);
-      //     printf("Forward propagation...\n");
       forward_prop();
-      //     printf("Computing cost...\n");
       compute_cost(i);
-      //    printf("Back propagation...\n");
       back_prop(i);
-      //   printf("Updating weights...\n");
       update_weights();
       if (i % 10000 == 0) {
         printf("Example %d completed\n", i);
@@ -316,7 +312,6 @@ int train_nn(float **images, const char *model_filename) {
     }
     float avg_cost = full_cost / num_training_ex;
     printf("Epoch %d, Avg Cost %f\n", it, avg_cost);
-    //    printf("Epoch %d, Cost %f\n", it, full_cost / num_training_ex);
     if (check_early_stopping(avg_cost, it, min_delta, patience)) {
       printf("Training stopped early at epoch %d\n", it);
       break;
@@ -400,14 +395,57 @@ int load_neural_network(const char *filename) {
   return LOAD_NEURAL_SUCCESS;
 }
 
+void load_validation_data(float ***images, int8_t **labels,
+                          int *num_validation) {
+  const char *validation_images_path =
+      "/Users/mason/Dev/neural-net/imgs/t10k-images.idx3-ubyte";
+  const char *validation_labels_path =
+      "/Users/mason/Dev/neural-net/labels/t10k-labels.idx1-ubyte";
+
+  load_images(validation_images_path, images, num_validation);
+  int num_labels;
+  load_labels(validation_labels_path, labels, &num_labels);
+
+  if (*num_validation != num_labels) {
+    fprintf(stderr,
+            "Number of validation images (%d) does not match number of labels "
+            "(%d)\n",
+            *num_validation, num_labels);
+    *num_validation = 0; 
+  }
+}
+
+float test_model(float **images, int8_t *labels, int num_validation) {
+  int correct = 0;
+  for (int i = 0; i < num_validation; i++) {
+    feed_input(i, images);
+    forward_prop();
+
+    int predicted = 0;
+    float max_prob = lay[num_layers - 1].neu[0].actv;
+    for (int j = 1; j < num_neurons[num_layers - 1]; j++) {
+      if (lay[num_layers - 1].neu[j].actv > max_prob) {
+        max_prob = lay[num_layers - 1].neu[j].actv;
+        predicted = j;
+      }
+    }
+    if (predicted == labels[i]) {
+      correct++;
+    }
+  }
+  float accuracy = (float)correct / num_validation;
+  printf("Accuracy: %f\n", accuracy);
+  return accuracy;
+}
 #ifndef DRAW_PROGRAM
 
 int main(void) {
-  float **images = NULL;
-  int8_t *labels = NULL;
-  int num_images, num_labels;
+  float **images = NULL, **validation_images = NULL;
+  int8_t *labels = NULL, *validation_labels = NULL;
+  int num_images, num_labels, num_validation;
   const char *model_filename = "trained_model.bin";
   bool model_loaded = false;
+  char user_choice;
 
   load_images("/Users/mason/Dev/neural-net/imgs/train-images.idx3-ubyte",
               &images, &num_images);
@@ -447,29 +485,88 @@ int main(void) {
   }
 
   if (access(model_filename, F_OK) != -1) {
-    printf("Loading existing model...\n");
-    if (load_neural_network(model_filename) == LOAD_NEURAL_SUCCESS) {
+    printf("Existing model found. Do you want to:\n");
+    printf("(L)oad and use the existing model\n");
+    printf("(C)ontinue training the existing model\n");
+    printf("(T)rain a new model from scratch\n");
+    printf("(V)alidate the model\n");
+    printf("Enter your choice (L/C/T/V): ");
+    scanf(" %c", &user_choice);
+
+    switch (user_choice) {
+    case 'L':
+    case 'l':
+      if (load_neural_network(model_filename) == LOAD_NEURAL_SUCCESS) {
+        model_loaded = true;
+        printf("Model loaded successfully.\n");
+      } else {
+        printf("Failed to load model.\n");
+      }
+      break;
+    case 'T':
+    case 't':
+      if (initialize_weights() != SUCCESS_INIT_WEIGHTS) {
+        printf("Failed to initialize weights\n");
+        goto cleanup;
+      }
+      if (train_nn(images, model_filename) != TRAIN_NEURAL_SUCCESS) {
+        printf("Failed to train the model\n");
+        goto cleanup;
+      }
       model_loaded = true;
-      printf("Model loaded successfully.\n");
-      printf("Run ./draw trained_model.bin\n");
-    } else {
-      printf("Failed to load model. Will train a new one.\n");
+      break;
+    case 'C':
+    case 'c':
+      if (!model_loaded) {
+        if (load_neural_network(model_filename) != LOAD_NEURAL_SUCCESS) {
+          printf("Failed to load model. Please load a model first.\n");
+          break;
+        }
+      }
+      if (train_nn(images, model_filename) != TRAIN_NEURAL_SUCCESS) {
+        printf("Failed to train the model\n");
+        goto cleanup;
+      }
+      break;
+    case 'V':
+    case 'v':
+      if (!model_loaded) {
+        if (load_neural_network(model_filename) != LOAD_NEURAL_SUCCESS) {
+          printf("Failed to load model. Please load a model first.\n");
+          break;
+        }
+        model_loaded = true;
+      }
+      load_validation_data(&validation_images, &validation_labels,
+                           &num_validation);
+      if (num_validation > 0) {
+        int temp_num_training_ex = num_training_ex; 
+        num_training_ex = num_validation; 
+        float accuracy =
+            test_model(validation_images, validation_labels, num_validation);
+        printf("Validation accuracy: %.2f%%\n", accuracy * 100);
+        num_training_ex = temp_num_training_ex; 
+      } else {
+        printf("Failed to load validation data or no validation data "
+               "available.\n");
+      }
+      break;
+    default:
+      printf("Invalid choice. Please try again.\n");
     }
   }
-
   if (!model_loaded) {
-    printf("Training new model...\n");
     if (initialize_weights() != SUCCESS_INIT_WEIGHTS) {
       printf("Failed to initialize weights\n");
       goto cleanup;
     }
-    int train_neural = train_nn(images, model_filename);
-    if (train_neural != TRAIN_NEURAL_SUCCESS) {
-      printf("Failed to train the model\n");
-      goto cleanup;
-    }
   }
 
+  int train_neural = train_nn(images, model_filename);
+  if (train_neural != TRAIN_NEURAL_SUCCESS) {
+    printf("Failed to train the model\n");
+    goto cleanup;
+  }
 cleanup:
   if (images) {
     for (int i = 0; i < num_images; i++) {

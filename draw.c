@@ -4,8 +4,8 @@
 #include "neuron.h"
 #include <locale.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 
 char grid[GRID_SIZE][GRID_SIZE];
 
@@ -122,12 +122,28 @@ void center_digit() {
   memcpy(grid, temp_grid, sizeof(grid));
 }
 
+void smooth_digit() {
+  char temp[GRID_SIZE][GRID_SIZE] = {{0}};
+  for (int y = 1; y < GRID_SIZE - 1; y++) {
+    for (int x = 1; x < GRID_SIZE - 1; x++) {
+      int cnt = 0;
+      for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+          if (grid[y + dy][x + dx] == '#')
+            cnt++;
+        }
+      }
+      temp[y][x] = (cnt >= 1) ? '#' : ' ';
+    }
+  }
+  memcpy(grid, temp, sizeof(grid));
+}
 
 // Temp function to test the centering of my digits;
 
 void redraw_grid(WINDOW *win) {
-  for (int y=0;y<GRID_SIZE;y++) {
-    for (int x=0;x<GRID_SIZE;x++) {
+  for (int y = 0; y < GRID_SIZE; y++) {
+    for (int x = 0; x < GRID_SIZE; x++) {
       mvwaddch(win, y, x * 2, grid[y][x]);
       mvwaddch(win, y, x * 2 + 1, ' ');
     }
@@ -172,7 +188,7 @@ int main(int argc, char *argv[]) {
   draw_grid(win);
 
   mvprintw(GRID_SIZE + 2, 1,
-           "Draw using mouse. Enter to test & clear. 'q' to quit.");
+           "Draw using mouse. Press 'c' to clear the grid. Press 'Enter' to test & clear. 'q' to quit.");
   refresh();
 
   while ((ch = getch()) != 'q') {
@@ -182,7 +198,7 @@ int main(int argc, char *argv[]) {
           is_mouse_down = true;
           mvprintw(GRID_SIZE + 5, 1, "Mouse button down detected at x=%d, y=%d",
                    event.x,
-                   event.y); // Debug output for mouse down
+                   event.y);
         } else if (event.bstate & BUTTON1_RELEASED) {
           is_mouse_down = false;
         }
@@ -194,6 +210,7 @@ int main(int argc, char *argv[]) {
       }
     } else if (ch == '\n') {
       center_digit();
+      smooth_digit();
       redraw_grid(win);
       refresh();
       sleep(1);
@@ -208,6 +225,10 @@ int main(int argc, char *argv[]) {
       mvprintw(GRID_SIZE + 3, 1, "                        ");
       mvprintw(GRID_SIZE + 4, 1, "                        ");
       mvprintw(GRID_SIZE + 5, 1, "                        ");
+      refresh();
+    } else if (ch == 'c') {
+      init_grid();
+      redraw_grid(win);
       refresh();
     } else {
       mvprintw(GRID_SIZE + 7, 1, "Key pressed: %d        ", ch);

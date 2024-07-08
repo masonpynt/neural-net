@@ -1,2 +1,5 @@
-img/
-labels/
+imgs/train-images.idx3-ubyte 
+imgs/t10k-images.idx3-ubyte
+labels/train-labels.idx1-ubyte
+labels/t10k-labels.idx1-ubyte
+compile-commands.json
