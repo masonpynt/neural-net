@@ -6,4 +6,5 @@ compile_commands.json
 *.o
 .cache/
 .clangd
-
+draw
+neural
