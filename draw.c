@@ -1,26 +1,100 @@
 #include "draw.h"
-#include "neural.h"
 #include "layer.h"
+#include "neural.h"
 #include "neuron.h"
 #include <locale.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-char grid[GRID_SIZE][GRID_SIZE];
+float grid[GRID_SIZE][GRID_SIZE];
+int prev_x = -1, prev_y = -1;
 
 void init_grid() {
   for (int y = 0; y < GRID_SIZE; y++) {
     for (int x = 0; x < GRID_SIZE; x++) {
-      grid[y][x] = ' ';
+      grid[y][x] = 0.0f;
     }
   }
+}
+void draw_line(float x0, float y0, float x1, float y1) {
+  float dx = x1 - x0;
+  float dy = y1 - y0;
+  float gradient = (dx == 0) ? 1 : dy / dx;
+
+  // Vert
+  if (dx == 0) {
+    for (int y = (int)fminf(y0, y1); y <= (int)fmaxf(y0, y1); y++) {
+      if (y >= 0 && y < GRID_SIZE) {
+        grid[y][(int)x0] = fminf(grid[y][(int)x0] + 1, 1);
+      }
+    }
+    return;
+  }
+
+  if (x0 > x1) {
+    float tmp = x0;
+    x0 = x1;
+    x1 = tmp;
+    tmp = y0;
+    y0 = y1;
+    y1 = tmp;
+  }
+  for (int x = (int)x0; x <= (int)x1; x++) {
+    if (x < 0 || x >= GRID_SIZE)
+      continue;
+
+    float y = y0 + gradient * (x - x0);
+    int iy = (int)y;
+    float fy = y - iy;
+
+    if (iy >= 0 && iy < GRID_SIZE) {
+      grid[iy][x] = fminf(grid[iy][x] + (1 - fy), 1);
+    }
+    if (iy + 1 >= 0 && iy + 1 < GRID_SIZE) {
+      grid[iy + 1][x] = fminf(grid[iy + 1][x] + fy, 1);
+    }
+  }
+}
+
+void draw_point(int x, int y) {
+  if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+    if (prev_x != -1 && prev_y != -1) {
+      draw_line(prev_x, prev_y, x, y);
+    } else {
+      grid[y][x] = 1.0f;
+    }
+    prev_x = x;
+    prev_y = y;
+  }
+}
+
+void gaussian_blur() {
+  float kernel[3][3] = {{1 / 16.0f, 2 / 16.0f, 1 / 16.0f},
+                        {2 / 16.0f, 4 / 16.0f, 2 / 16.0f},
+                        {1 / 16.0f, 2 / 16.0f, 1 / 16.0f}};
+  float temp_grid[GRID_SIZE][GRID_SIZE] = {0};
+  for (int y = 1; y < GRID_SIZE - 1; y++) {
+    for (int x = 1; x < GRID_SIZE - 1; x++) {
+      float sum = 0;
+      for (int ky = -1; ky <= 1; ky++) {
+        for (int kx = -1; kx <= 1; kx++) { 
+          sum += grid[y + ky][x + kx] * kernel[ky + 1][kx + 1];
+        }
+      }
+      temp_grid[y][x] = sum;
+    }
+  }
+  memcpy(grid, temp_grid, sizeof(grid));
 }
 
 void draw_grid(WINDOW *win) {
   for (int y = 0; y < GRID_SIZE; y++) {
     for (int x = 0; x < GRID_SIZE; x++) {
-      mvwaddch(win, y, x * 2, grid[y][x]);
+      float value = grid[y][x];
+      char display_char = (value > 0.5f) ? '#' : ' ';
+      mvwaddch(win, y, x * 2, display_char);
       mvwaddch(win, y, x * 2 + 1, ' ');
     }
   }
@@ -34,22 +108,29 @@ float *convert_to_input() {
     refresh();
     return NULL;
   }
+
+  float min_val = 1.0f, max_val = 0.0f;
+
   for (int i = 0; i < GRID_SIZE; i++) {
     for (int j = 0; j < GRID_SIZE; j++) {
-      input[i * GRID_SIZE + j] = (grid[i][j] == '#') ? 1.0f : 0.0f;
+      if (grid[i][j] < min_val)
+        min_val = grid[i][j];
+      if (grid[i][j] > max_val)
+        max_val = grid[i][j];
+    }
+  }
+
+  for (int i = 0; i < GRID_SIZE; i++) {
+    for (int j = 0; j < GRID_SIZE; j++) {
+      if (max_val > min_val) {
+        input[i * GRID_SIZE + j] = (grid[i][j] - min_val) / (max_val - min_val);
+      } else {
+        input[i * GRID_SIZE + j] =
+            grid[i][j]; 
+      }
     }
   }
   return input;
-}
-
-void draw_point(WINDOW *win, int x, int y) {
-  if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
-    grid[y][x] = '#';
-    mvwaddch(win, y, x * 2, '#');
-    mvwaddch(win, y, x * 2 + 1, ' ');
-    wrefresh(win);
-  }
-  refresh();
 }
 
 void test_network(float *input) {
@@ -93,9 +174,10 @@ void test_network(float *input) {
 
 void center_digit() {
   int min_x = GRID_SIZE, max_x = 0, min_y = GRID_SIZE, max_y = 0;
+  float threshold = 0.1f; 
   for (int y = 0; y < GRID_SIZE; y++) {
     for (int x = 0; x < GRID_SIZE; x++) {
-      if (grid[y][x] == '#') {
+      if (grid[y][x] > threshold) {
         min_x = (x < min_x) ? x : min_x;
         max_x = (x > max_x) ? x : max_x;
         min_y = (y < min_y) ? y : min_y;
@@ -107,39 +189,19 @@ void center_digit() {
   int height = max_y - min_y + 1;
   int new_min_x = (GRID_SIZE - width) / 2;
   int new_min_y = (GRID_SIZE - height) / 2;
-  char temp_grid[GRID_SIZE][GRID_SIZE] = {{' '}};
+  float temp_grid[GRID_SIZE][GRID_SIZE] = {{0}};
 
   for (int y = min_y; y <= max_y; y++) {
     for (int x = min_x; x <= max_x; x++) {
-      if (grid[y][x] == '#') {
-        int new_y = new_min_y + (y - min_y);
-        int new_x = new_min_x + (x - min_x);
-        temp_grid[new_y][new_x] = '#';
-      }
+      int new_y = new_min_y + (y - min_y);
+      int new_x = new_min_x + (x - min_x);
+      temp_grid[new_y][new_x] = grid[y][x];
     }
   }
 
   memcpy(grid, temp_grid, sizeof(grid));
 }
 
-void smooth_digit() {
-  char temp[GRID_SIZE][GRID_SIZE] = {{0}};
-  for (int y = 1; y < GRID_SIZE - 1; y++) {
-    for (int x = 1; x < GRID_SIZE - 1; x++) {
-      int cnt = 0;
-      for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-          if (grid[y + dy][x + dx] == '#')
-            cnt++;
-        }
-      }
-      temp[y][x] = (cnt >= 1) ? '#' : ' ';
-    }
-  }
-  memcpy(grid, temp, sizeof(grid));
-}
-
-// Temp function to test the centering of my digits;
 
 void redraw_grid(WINDOW *win) {
   for (int y = 0; y < GRID_SIZE; y++) {
@@ -150,6 +212,7 @@ void redraw_grid(WINDOW *win) {
   }
   wrefresh(win);
 }
+
 int main(int argc, char *argv[]) {
 
   if (argc != 2) {
@@ -184,11 +247,12 @@ int main(int argc, char *argv[]) {
   win = newwin(GRID_SIZE, GRID_SIZE * 2, 1, 1);
   box(win, 0, 0);
 
-  init_grid();
+  memset(grid, 0, sizeof(grid));
   draw_grid(win);
 
   mvprintw(GRID_SIZE + 2, 1,
-           "Draw using mouse. Press 'c' to clear the grid. Press 'Enter' to test & clear. 'q' to quit.");
+           "Draw using mouse. Press 'c' to clear the grid. Press 'Enter' to "
+           "test & clear. 'q' to quit.");
   refresh();
 
   while ((ch = getch()) != 'q') {
@@ -197,20 +261,20 @@ int main(int argc, char *argv[]) {
         if (event.bstate & BUTTON1_PRESSED) {
           is_mouse_down = true;
           mvprintw(GRID_SIZE + 5, 1, "Mouse button down detected at x=%d, y=%d",
-                   event.x,
-                   event.y);
+                   event.x, event.y);
         } else if (event.bstate & BUTTON1_RELEASED) {
           is_mouse_down = false;
         }
         if (is_mouse_down && (event.bstate & REPORT_MOUSE_POSITION)) {
           int x = (event.x - 1) / 2;
           int y = event.y - 1;
-          draw_point(win, x, y);
+          draw_point(x, y);
+          draw_grid(win);
         }
       }
     } else if (ch == '\n') {
+      gaussian_blur();
       center_digit();
-      smooth_digit();
       redraw_grid(win);
       refresh();
       sleep(1);
@@ -220,14 +284,19 @@ int main(int argc, char *argv[]) {
         free(nn_input);
       }
       sleep(2);
-      init_grid();
+      memset(grid, 0, sizeof(grid));
       draw_grid(win);
+      prev_x = -1;
+      prev_y = -1;
+      is_mouse_down = false;
       mvprintw(GRID_SIZE + 3, 1, "                        ");
       mvprintw(GRID_SIZE + 4, 1, "                        ");
       mvprintw(GRID_SIZE + 5, 1, "                        ");
       refresh();
     } else if (ch == 'c') {
-      init_grid();
+      memset(grid, 0, sizeof(grid));
+      prev_x = -1;
+      prev_y = -1;
       redraw_grid(win);
       refresh();
     } else {
